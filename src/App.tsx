@@ -1899,7 +1899,9 @@ const InputNilai = () => {
       const tanggalRapor = actualData[0]?.Data_tanggal || "";
       doc.text(
         `${
-          schoolData?.tanggalRapor ? `Bungeng, ${schoolData.tanggalRapor}` : ""
+          schoolData?.tanggalRapor
+            ? `${schoolData?.kabKota || "Bungeng"}, ${schoolData.tanggalRapor}`
+            : ""
         }`,
         guruX,
         ttdY
@@ -11470,6 +11472,9 @@ const RekapNilai = () => {
   const [downloadingSampulId, setDownloadingSampulId] = useState<string | null>(
     null
   );
+  const [downloadingPiagamId, setDownloadingPiagamId] = useState<string | null>(
+    null
+  );
   const [previewSiswa, setPreviewSiswa] = useState<any>(null);
   const [isDownloadingAll, setIsDownloadingAll] = useState(false);
   const [isDownloadingExcel, setIsDownloadingExcel] = useState(false);
@@ -11959,19 +11964,13 @@ const RekapNilai = () => {
       ];
 
       // Filter kolom yang tidak punya nama mapel valid
-      const fixedKeepHeaders = new Set([
-        "Data1",
-        "Data15",
-        "Data16",
-        "Data17",
-        "Data18",
-      ]);
+      const fixedKeepHeaders = new Set(["Data1", "Data16", "Data17", "Data18"]);
       const headers = allHeaders.filter((h) => {
         if (fixedKeepHeaders.has(h)) return true;
         const dispH = (data[0]?.[h] || "").trim();
         return (
           dispH !== "" &&
-          dispH !== h && // bukan fallback ke nama key-nya sendiri
+          dispH !== h &&
           !dispH.includes("#REF!") &&
           !dispH.includes("#N/A") &&
           !dispH.toUpperCase().includes("N/A")
@@ -11981,9 +11980,7 @@ const RekapNilai = () => {
       const displayHdrs = headers.map((h) => data[0]?.[h] || h);
 
       // Override tampilan header tertentu di PDF
-      const headerOverrides: { [key: string]: string } = {
-        Data16: "RATA\nRATA", // Pecah manual agar tidak terpotong
-      };
+      const headerOverrides: { [key: string]: string } = {};
       const displayHdrsPDF = displayHdrs.map((h, idx) => {
         const key = headers[idx];
         return headerOverrides[key] ?? h;
@@ -11998,7 +11995,7 @@ const RekapNilai = () => {
       // Hitung lebar fixedSpecial berdasarkan kata terpanjang di headernya
       doc.setFontSize(6);
       const fixedSpecialHeaders = ["Data16", "Data17", "Data18"];
-      let fixedSpecialW = 14; // default minimum
+      let fixedSpecialW = 12; // diperkecil
       fixedSpecialHeaders.forEach((h) => {
         const dispH = (data[0][h] || "").toUpperCase();
         const words = dispH.trim().split(/\s+/);
@@ -12006,7 +12003,7 @@ const RekapNilai = () => {
           (a, b) => (doc.getTextWidth(a) >= doc.getTextWidth(b) ? a : b),
           ""
         );
-        const minW = doc.getTextWidth(longestWord) + 4;
+        const minW = doc.getTextWidth(longestWord) + 2; // padding dikurangi
         if (minW > fixedSpecialW) fixedSpecialW = minW;
       });
       const fixedSpecialCount = headers
@@ -12043,12 +12040,13 @@ const RekapNilai = () => {
         margin * 2 + noColW + namaColW + fixedSpecialCount * fixedSpecialW;
       const remainingW = pageW - usedW;
 
-      // Distribusikan sisa lebar secara proporsional berdasarkan lebar minimum
-      const scale = remainingW / totalMinW;
+      // Paksa semua kolom mapel berbagi sisa ruang secara merata
+      const equalW = remainingW / (mapelCols.length || 1);
       const mapelColWidths: { [h: string]: number } = {};
       mapelCols.forEach((h) => {
-        mapelColWidths[h] = mapelMinWidths[h] * scale;
+        mapelColWidths[h] = equalW;
       });
+      const scale = 1; // tidak dipakai tapi tetap dideklarasikan agar tidak error
 
       // Fallback otherColW untuk kompatibilitas
       const otherColW = remainingW / (mapelCols.length || 1);
@@ -12103,7 +12101,7 @@ const RekapNilai = () => {
           { align: "center" }
         );
 
-        // Pecah display header jadi multiline per kata
+        // Pecah display header jadi multiline per kata, dengan font auto-shrink
         const multilineHdrs = displayHdrsPDF.map((h) => {
           if (!h) return h;
 
@@ -12114,36 +12112,51 @@ const RekapNilai = () => {
             ? namaColW
             : mapelColWidths[hKey] ?? otherColW;
 
-          doc.setFontSize(6);
+          const words = h.trim().toUpperCase().split(/\s+/);
 
-          // Pecah per tanda hubung juga, tidak hanya spasi
-          const rawWords = h.trim().toUpperCase().split(/\s+/);
-          const words: string[] = [];
-          rawWords.forEach((word) => {
-            // Jika kata terlalu lebar untuk kolom, pecah per karakter tanda hubung
-            if (doc.getTextWidth(word) > colW - 2 && word.includes("-")) {
-              const parts = word.split("-");
-              parts.forEach((part, i) => {
-                words.push(i < parts.length - 1 ? part + "-" : part);
-              });
-            } else {
-              words.push(word);
+          // Coba susun baris dengan font 6, jika ada kata yang tidak muat perkecil font
+          // Tapi kita tidak bisa set font per-cell di autoTable header secara individual,
+          // jadi kita pastikan setiap kata muat di lebar kolom dengan cara:
+          // susun baris normal (pecah per spasi saja, TIDAK pecah per huruf/suku kata)
+          const buildLines = (fontSize: number): string[] => {
+            doc.setFontSize(fontSize);
+            const lines: string[] = [];
+            let currentLine = "";
+
+            words.forEach((word) => {
+              const testLine = currentLine ? `${currentLine} ${word}` : word;
+              if (doc.getTextWidth(testLine) <= colW - 1) {
+                currentLine = testLine;
+              } else {
+                if (currentLine) lines.push(currentLine);
+                currentLine = word;
+              }
+            });
+            if (currentLine) lines.push(currentLine);
+            return lines;
+          };
+
+          // Cek apakah ada kata yang lebih lebar dari kolom, jika ya kecilkan font
+          let fontSize = 6;
+          let lines = buildLines(fontSize);
+
+          // Pastikan tidak ada satu kata pun yang melebihi lebar kolom
+          const hasOverflow = words.some((w) => doc.getTextWidth(w) > colW - 1);
+
+          if (hasOverflow) {
+            // Kurangi font sampai semua kata muat
+            while (fontSize > 3) {
+              fontSize -= 0.5;
+              doc.setFontSize(fontSize);
+              const allFit = words.every(
+                (w) => doc.getTextWidth(w) <= colW - 1
+              );
+              if (allFit) {
+                lines = buildLines(fontSize);
+                break;
+              }
             }
-          });
-
-          const lines: string[] = [];
-          let currentLine = "";
-
-          words.forEach((word) => {
-            const testLine = currentLine ? `${currentLine} ${word}` : word;
-            if (doc.getTextWidth(testLine) <= colW - 2) {
-              currentLine = testLine;
-            } else {
-              if (currentLine) lines.push(currentLine);
-              currentLine = word;
-            }
-          });
-          if (currentLine) lines.push(currentLine);
+          }
 
           return lines.join("\n");
         });
@@ -12392,6 +12405,40 @@ const RekapNilai = () => {
           ...summaryRows.map((s) => ["", s.label, ...s.values]),
         ];
 
+        // Hitung font size otomatis berdasarkan lebar kolom terkecil dan kata terpanjang
+        const allWordsInHeaders = displayHdrsPDF.flatMap((h) =>
+          (h || "").trim().toUpperCase().split(/\s+/)
+        );
+
+        // Pasangkan setiap kata dengan lebar kolomnya
+        const wordColPairs: { word: string; colW: number }[] = [];
+        displayHdrsPDF.forEach((h, idx) => {
+          const hKey = headers[idx];
+          const colW = fixedSpecialCols.has(hKey)
+            ? fixedSpecialW
+            : hKey === "Data1"
+            ? namaColW
+            : mapelColWidths[hKey] ?? otherColW;
+          (h || "")
+            .trim()
+            .toUpperCase()
+            .split(/\s+/)
+            .forEach((word) => {
+              wordColPairs.push({ word, colW });
+            });
+        });
+
+        // Mulai dari font 6, turunkan sampai semua kata muat di kolom masing-masing
+        let autoFontSize = 6;
+        while (autoFontSize > 3) {
+          doc.setFontSize(autoFontSize);
+          const allFit = wordColPairs.every(
+            ({ word, colW }) => doc.getTextWidth(word) <= colW - 2
+          );
+          if (allFit) break;
+          autoFontSize -= 0.5;
+        }
+
         autoTable(doc, {
           startY: margin + 15,
           head: [["NO", ...multilineHdrs]],
@@ -12402,9 +12449,9 @@ const RekapNilai = () => {
             textColor: 255,
             fontStyle: "bold",
             halign: "center",
-            fontSize: 6,
-            cellPadding: 2,
-            minCellHeight: 12,
+            fontSize: autoFontSize,
+            cellPadding: 1,
+            minCellHeight: 14,
             valign: "middle",
             overflow: "linebreak",
           },
@@ -12463,8 +12510,9 @@ const RekapNilai = () => {
 
         // Tanggal
         const tanggalRapor = localSchoolData?.tanggalRapor || "";
+        const kabKota = localSchoolData?.kabKota || "Bungeng";
         if (tanggalRapor) {
-          doc.text(`Bungeng, ${tanggalRapor}`, guruX, ttdStartY);
+          doc.text(`${kabKota}, ${tanggalRapor}`, guruX, ttdStartY);
         }
 
         // Label jabatan
@@ -12695,6 +12743,297 @@ const RekapNilai = () => {
     doc.save(fileName);
   };
 
+  const downloadPiagamPDF = async (rowData: any) => {
+    setDownloadingPiagamId(rowData.Data1);
+
+    let latestSchoolData = localSchoolData || schoolData;
+    if (!latestSchoolData || !latestSchoolData.namaGuru) {
+      try {
+        const schoolRes = await fetch(`${endpoint}?action=schoolData`);
+        if (schoolRes.ok) {
+          const schoolJson = await schoolRes.json();
+          if (schoolJson.success && schoolJson.data?.length > 0) {
+            latestSchoolData = schoolJson.data[0];
+            setLocalSchoolData(schoolJson.data[0]);
+          }
+        }
+      } catch (e) {
+        console.warn("Gagal fetch schoolData:", e);
+      }
+    }
+
+    try {
+      const doc = new jsPDF({
+        orientation: "landscape",
+        unit: "mm",
+        format: "a4",
+      });
+
+      const pageW = 297;
+      const pageH = 210;
+      const margin = 8;
+      const centerX = pageW / 2;
+
+      // ─── BORDER DEKORATIF ───
+      doc.setDrawColor(150, 130, 80);
+      doc.setLineWidth(1.5);
+      doc.rect(margin, margin, pageW - margin * 2, pageH - margin * 2);
+
+      doc.setLineWidth(0.5);
+      doc.rect(
+        margin + 3,
+        margin + 3,
+        pageW - (margin + 3) * 2,
+        pageH - (margin + 3) * 2
+      );
+      doc.setDrawColor(0, 0, 0);
+
+      // ─── LOGO TUT WURI (kiri) ───
+      try {
+        const response = await fetch("/logo-tutwurih.png");
+        const blob = await response.blob();
+        const logoBase64: string = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.readAsDataURL(blob);
+        });
+        doc.addImage(logoBase64, "PNG", margin + 8, margin + 6, 26, 26);
+      } catch (e) {
+        console.warn("Gagal load logo Tut Wuri:", e);
+      }
+
+      // ─── HEADER TEKS ───
+      let y = margin + 12;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(13);
+      doc.text(
+        `PEMERINTAH KABUPATEN ${
+          (latestSchoolData?.kabKota || "").toUpperCase() || "........."
+        }`,
+        centerX,
+        y,
+        { align: "center" }
+      );
+
+      y += 6;
+      doc.text("DINAS PENDIDIKAN", centerX, y, { align: "center" });
+
+      y += 7;
+      doc.setFontSize(15);
+      doc.text(
+        (
+          latestSchoolData?.namaSekolah ||
+          "SEKOLAH DASAR NEGERI ................."
+        ).toUpperCase(),
+        centerX,
+        y,
+        { align: "center" }
+      );
+
+      y += 5;
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(9);
+      doc.text(
+        `Alamat : ${
+          latestSchoolData?.alamatSekolah ||
+          "............................................"
+        }`,
+        centerX,
+        y,
+        { align: "center" }
+      );
+
+      // Garis ganda pemisah header
+      y += 8;
+      doc.setLineWidth(0.8);
+      doc.line(margin + 10, y, pageW - margin - 10, y);
+      y += 1.5;
+      doc.line(margin + 10, y, pageW - margin - 10, y);
+      doc.setLineWidth(0.2);
+
+      // ─── JUDUL PIAGAM ───
+      y += 16;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(30);
+      doc.setTextColor(120, 100, 40);
+      doc.text("PIAGAM PENGHARGAAN", centerX, y, { align: "center" });
+
+      const titleWidth = doc.getTextWidth("PIAGAM PENGHARGAAN");
+      doc.setLineWidth(0.6);
+      doc.setDrawColor(120, 100, 40);
+      doc.line(
+        centerX - titleWidth / 2,
+        y + 2.5,
+        centerX + titleWidth / 2,
+        y + 2.5
+      );
+      doc.setDrawColor(0, 0, 0);
+      doc.setTextColor(0, 0, 0);
+
+      // ─── DIBERIKAN KEPADA ───
+      y += 14;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(12);
+      doc.text("Diberikan kepada:", centerX, y, { align: "center" });
+
+      // ─── NAMA SISWA ───
+      y += 11;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(20);
+      const namaSiswa = rowData.Data1 || "-";
+      doc.text(namaSiswa.toUpperCase(), centerX, y, { align: "center" });
+
+      const namaWidth = doc.getTextWidth(namaSiswa.toUpperCase());
+      doc.setLineWidth(0.3);
+      doc.line(
+        centerX - namaWidth / 2 - 8,
+        y + 1.5,
+        centerX + namaWidth / 2 + 8,
+        y + 1.5
+      );
+
+      // ─── KELAS ───
+      let kelas = rowData.Data2 || "-";
+      try {
+        const sekolahCached = await idbLoad("sekolahData");
+        if (sekolahCached?.kelas) {
+          const kelasVal = String(sekolahCached.kelas).trim();
+          const rombelVal = String(sekolahCached.rombel || "").trim();
+          kelas =
+            rombelVal && rombelVal !== "-"
+              ? `${kelasVal}${rombelVal}`
+              : kelasVal;
+        }
+      } catch (e) {
+        console.warn("Gagal fetch kelas dari sekolahData:", e);
+      }
+
+      y += 11;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(`KELAS ${kelas}`, centerX, y, { align: "center" });
+
+      // ─── RANKING & JUMLAH SISWA ───
+      const rankingKey = "Data18";
+      const ranking = rowData[rankingKey] || "-";
+      const jumlahSiswaKelas = actualData.filter(
+        (r: any) => r.Data2 === rowData.Data2
+      ).length;
+      const semesterLabel =
+        selectedSemester === "1" ? "ganjil (I)" : "genap (II)";
+      const tahunPelajaran = latestSchoolData?.tahunPelajaran || ".../...";
+
+      y += 13;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(14);
+      doc.text(
+        `Atas prestasinya sebagai Peringkat Kelas ke-${ranking} dari ${jumlahSiswaKelas} siswa,`,
+        centerX,
+        y,
+        { align: "center" }
+      );
+      y += 8;
+      doc.text(
+        `Pada semester ${semesterLabel} Tahun Pelajaran ${tahunPelajaran}.`,
+        centerX,
+        y,
+        { align: "center" }
+      );
+
+      // ─── TANDA TANGAN ───
+      const ttdY = pageH - margin - 46;
+      const kepsekX = margin + 45;
+      const guruX = pageW - margin - 65;
+
+      doc.setFontSize(10);
+      doc.text("Mengetahui,", kepsekX, ttdY, { align: "center" });
+      doc.text("Kepala Sekolah", kepsekX, ttdY + 5, { align: "center" });
+
+      const tanggalRapor = latestSchoolData?.tanggalRapor || "";
+      const kabKota = latestSchoolData?.kabKota || "";
+      doc.text(
+        `${kabKota}${tanggalRapor ? `, ${tanggalRapor}` : ""}`,
+        guruX,
+        ttdY,
+        { align: "center" }
+      );
+      doc.text(`Guru Kelas ${kelas}`, guruX, ttdY + 5, { align: "center" });
+
+      if (latestSchoolData?.ttdKepsek) {
+        try {
+          const compressed = await compressImageToBase64(
+            latestSchoolData.ttdKepsek,
+            800,
+            1.0
+          );
+          doc.addImage(compressed, "JPEG", kepsekX - 20, ttdY + 7, 40, 18);
+        } catch (e) {
+          console.warn("Gagal load TTD Kepsek:", e);
+        }
+      }
+
+      if (latestSchoolData?.ttdGuru) {
+        try {
+          const compressed = await compressImageToBase64(
+            latestSchoolData.ttdGuru,
+            800,
+            1.0
+          );
+          doc.addImage(compressed, "JPEG", guruX - 20, ttdY + 7, 40, 18);
+        } catch (e) {
+          console.warn("Gagal load TTD Guru:", e);
+        }
+      }
+
+      doc.setFont("helvetica", "bold");
+      const namaKepsek = latestSchoolData?.namaKepsek || "_______________";
+      const namaGuru = latestSchoolData?.namaGuru || "_______________";
+      doc.text(namaKepsek, kepsekX, ttdY + 30, { align: "center" });
+      doc.text(namaGuru, guruX, ttdY + 30, { align: "center" });
+
+      doc.setLineWidth(0.3);
+      const kepsekTextW = doc.getTextWidth(namaKepsek);
+      const guruTextW = doc.getTextWidth(namaGuru);
+      doc.line(
+        kepsekX - kepsekTextW / 2,
+        ttdY + 31,
+        kepsekX + kepsekTextW / 2,
+        ttdY + 31
+      );
+      doc.line(
+        guruX - guruTextW / 2,
+        ttdY + 31,
+        guruX + guruTextW / 2,
+        ttdY + 31
+      );
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.text(
+        `NIP. ${latestSchoolData?.nipKepsek || "_______________"}`,
+        kepsekX,
+        ttdY + 35,
+        { align: "center" }
+      );
+      doc.text(
+        `NIP. ${latestSchoolData?.nipGuru || "_______________"}`,
+        guruX,
+        ttdY + 35,
+        { align: "center" }
+      );
+
+      const piagamFileName = `Piagam_${namaSiswa.replace(/\s+/g, "_")}.pdf`;
+      doc.save(piagamFileName);
+    } catch (err) {
+      alert(
+        "❌ Gagal membuat Piagam: " +
+          (err instanceof Error ? err.message : "Unknown error")
+      );
+    } finally {
+      setDownloadingPiagamId(null);
+    }
+  };
+
   const downloadRaporPDF = async (rowData: any) => {
     setDownloadingId(rowData.Data1);
 
@@ -12795,7 +13134,7 @@ const RekapNilai = () => {
       doc.text("Alamat Sekolah", leftCol, y);
       const alamatLengkap = `${
         latestSchoolData?.alamatSekolah || "Desa Bungeng, Kecamatan Batang"
-      }, ${latestSchoolData?.kabKota || ""}`;
+      }`;
       const alamatLines = doc.splitTextToSize(
         ": " + alamatLengkap,
         rightCol - colonLeft - 5
@@ -13311,7 +13650,8 @@ const RekapNilai = () => {
       doc.setFont("helvetica", "normal");
 
       const tanggalRapor = latestSchoolData?.tanggalRapor || "23 Desember 2023";
-      doc.text(`Bungeng, ${tanggalRapor}`, rightColTTD, ttdY + 10, {
+      const kabKota = latestSchoolData?.kabKota || "Bungeng";
+      doc.text(`${kabKota}, ${tanggalRapor}`, rightColTTD, ttdY + 10, {
         align: "left",
       });
 
@@ -13850,6 +14190,39 @@ const RekapNilai = () => {
                     >
                       {downloadingSampulId === row.Data1 ? "⏳" : "🖨️ Sampul"}
                     </button>
+                    {(() => {
+                      const rankingVal = parseInt(row.Data18);
+                      if (isNaN(rankingVal) || rankingVal > 5) return null;
+                      return (
+                        <button
+                          onClick={() => downloadPiagamPDF(row)}
+                          disabled={downloadingPiagamId === row.Data1}
+                          style={{
+                            padding: "6px 12px",
+                            backgroundColor:
+                              downloadingPiagamId === row.Data1
+                                ? "#ccc"
+                                : "#9C27B0",
+                            color: "white",
+                            border: "none",
+                            borderRadius: "4px",
+                            cursor:
+                              downloadingPiagamId === row.Data1
+                                ? "not-allowed"
+                                : "pointer",
+                            fontSize: "11px",
+                            fontWeight: "bold",
+                            whiteSpace: "nowrap",
+                            width: "80px",
+                          }}
+                        >
+                          {downloadingPiagamId === row.Data1
+                            ? "⏳"
+                            : "🏆 Piagam"}
+                        </button>
+                      );
+                    })()}
+
                     <button
                       onClick={() => setPreviewSiswa(row)}
                       style={{
