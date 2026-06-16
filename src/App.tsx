@@ -12801,11 +12801,15 @@ const RekapNilai = () => {
       );
 
       y += 6;
-      doc.text("DINAS PENDIDIKAN", centerX, y, { align: "center" });
+      doc.text("DINAS PENDIDIKAN DAN KEBUDAYAAN", centerX, y, {
+        align: "center",
+      });
 
       y += 6;
-      doc.setFontSize(15);
-      doc.text("KOORDINATOR WILAYAH DIKPORA KECAMATAN BISSAPPU", centerX, y, { align: "center" });
+      doc.setFontSize(12);
+      doc.text("KOORDINATOR WILAYAH DIKPORA KECAMATAN BISSAPPU", centerX, y, {
+        align: "center",
+      });
 
       y += 7;
       doc.setFontSize(15);
