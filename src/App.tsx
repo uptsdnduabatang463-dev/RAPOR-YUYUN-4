@@ -11377,7 +11377,9 @@ const PreviewRaporModal: React.FC<{
                 <div style={{ textAlign: "center", minWidth: "150px" }}>
                   <div>
                     {schoolData?.tanggalRapor
-                      ? `Bungeng, ${schoolData.tanggalRapor}`
+                      ? `${schoolData?.kabKota || "Bungeng"}, ${
+                          schoolData.tanggalRapor
+                        }`
                       : ""}
                   </div>
                   <div>Wali Kelas,</div>
@@ -11623,11 +11625,11 @@ const RekapNilai = () => {
         );
       });
       const excludeKeys = ["Data18"];
-      const nilaiHeaders = rekapHeaders
+      const nilaiHeaders = headers
         .slice(1)
         .filter((h) => !excludeKeys.includes(h));
       const mapelOnlyHeaders = nilaiHeaders.filter(
-        (h) => !["Data16", "Data17"].includes(h)
+        (h) => !["Data16", "Data17", "Data18"].includes(h)
       );
 
       const getVals = (rows: any[], h: string) =>
@@ -11920,8 +11922,20 @@ const RekapNilai = () => {
     if (filteredData.length === 0) return;
     setIsDownloadingAll(true);
 
-    let currentSchoolData = localSchoolData;
-    if (!currentSchoolData) {
+    // Ambil data sekolah - sama persis dengan downloadRaporPDF
+    let currentSchoolData = localSchoolData || schoolData;
+    if (!currentSchoolData || !currentSchoolData.namaGuru) {
+      try {
+        const cachedSekolah = await idbLoad("sekolahData");
+        if (cachedSekolah) {
+          currentSchoolData = cachedSekolah;
+          setLocalSchoolData(cachedSekolah);
+        }
+      } catch (e) {
+        console.warn("Gagal load IndexedDB sekolah:", e);
+      }
+    }
+    if (!currentSchoolData || !currentSchoolData.namaGuru) {
       try {
         const schoolRes = await fetch(`${endpoint}?action=schoolData`);
         if (schoolRes.ok) {
@@ -11990,7 +12004,7 @@ const RekapNilai = () => {
       const noColW = 8;
       const namaColW = 60;
 
-      // Kolom fixed (non-mapel): Data15=Jumlah, Data16=Rata-rata, Data17=Ranking
+      // Kolom fixed (non-mapel): Data16=Jumlah, Data17=Rata-rata, Data18=Ranking
       const fixedSpecialCols = new Set(["Data16", "Data17", "Data18"]);
       // Hitung lebar fixedSpecial berdasarkan kata terpanjang di headernya
       doc.setFontSize(6);
@@ -12079,7 +12093,7 @@ const RekapNilai = () => {
 
       let isFirstPage = true;
 
-      Object.entries(groupedByKelas).forEach(async ([kelas, rows]) => {
+      for (const [kelas, rows] of Object.entries(groupedByKelas)) {
         if (!isFirstPage) {
           doc.addPage();
         }
@@ -12165,37 +12179,46 @@ const RekapNilai = () => {
         const nilaiHeaders = headers
           .slice(1)
           .filter((h) => !excludeKeys.includes(h));
+
+        // Data6-Data15 = mapel murni, Data16=JUMLAH, Data17=RATA-RATA
         const mapelOnlyHeaders = nilaiHeaders.filter(
-          (h) => !["Data16", "Data17"].includes(h)
+          (h) => !["Data16", "Data17", "Data18"].includes(h)
         );
 
         const getVals = (h: string) =>
           rows.map((row) => parseFloat(row[h])).filter((v) => !isNaN(v));
 
-        const calcHoriz = (h: string, type: "sum" | "avg") => {
-          const perSiswa = rows
+        const getPerSiswaJumlah = () =>
+          rows
+            .map((row) => {
+              const v = mapelOnlyHeaders
+                .map((mh) => parseFloat(row[mh]))
+                .filter((v) => !isNaN(v));
+              return v.length > 0 ? v.reduce((a, b) => a + b, 0) : null;
+            })
+            .filter((v) => v !== null) as number[];
+
+        const getPerSiswaRata = () =>
+          rows
             .map((row) => {
               const v = mapelOnlyHeaders
                 .map((mh) => parseFloat(row[mh]))
                 .filter((v) => !isNaN(v));
               return v.length > 0
-                ? type === "sum"
-                  ? v.reduce((a, b) => a + b, 0)
-                  : v.reduce((a, b) => a + b, 0) / v.length
+                ? v.reduce((a, b) => a + b, 0) / v.length
                 : null;
             })
             .filter((v) => v !== null) as number[];
-          return perSiswa;
-        };
 
+        // Data16=JUMLAH, Data17=RATA-RATA, lainnya=nilai mapel biasa
         const buildSummaryValues = (
           mapelFn: (h: string) => string,
-          data15Fn: (vals: number[]) => string,
-          data16Fn: (vals: number[]) => string
+          data16Fn: () => string,
+          data17Fn: () => string
         ) => {
           return nilaiHeaders.map((h) => {
-            if (h === "Data15") return data15Fn(calcHoriz("Data15", "sum"));
-            if (h === "Data16") return data16Fn(calcHoriz("Data16", "avg"));
+            if (h === "Data16") return data16Fn();
+            if (h === "Data17") return data17Fn();
             return mapelFn(h);
           });
         };
@@ -12208,19 +12231,18 @@ const RekapNilai = () => {
                 const v = getVals(h);
                 return v.length > 0 ? String(v.reduce((a, b) => a + b, 0)) : "";
               },
-              (v) => (v.length > 0 ? String(v.reduce((a, b) => a + b, 0)) : ""),
-              (_v) => {
-                const totalJumlah = rows
-                  .map((row) => {
-                    const v = mapelOnlyHeaders
-                      .map((mh) => parseFloat(row[mh]))
-                      .filter((v) => !isNaN(v));
-                    return v.length > 0 ? v.reduce((a, b) => a + b, 0) : null;
-                  })
-                  .filter((v) => v !== null) as number[];
-                const grandTotal = totalJumlah.reduce((a, b) => a + b, 0);
-                return mapelOnlyHeaders.length > 0
-                  ? (grandTotal / mapelOnlyHeaders.length).toFixed(2)
+              () => {
+                const perSiswa = getPerSiswaJumlah();
+                return perSiswa.length > 0
+                  ? String(perSiswa.reduce((a, b) => a + b, 0))
+                  : "";
+              },
+              () => {
+                const perSiswa = getPerSiswaJumlah();
+                return perSiswa.length > 0
+                  ? (
+                      perSiswa.reduce((a, b) => a + b, 0) / perSiswa.length
+                    ).toFixed(2)
                   : "";
               }
             ),
@@ -12235,36 +12257,20 @@ const RekapNilai = () => {
                   ? (v.reduce((a, b) => a + b, 0) / v.length).toFixed(2)
                   : "";
               },
-              // Data15: jumlah semua rata-rata per mapel
-              (_v) => {
-                const totalRataMapel = mapelOnlyHeaders.reduce((sum, mh) => {
-                  const vals = rows
-                    .map((row) => parseFloat(row[mh]))
-                    .filter((v) => !isNaN(v));
-                  const avg =
-                    vals.length > 0
-                      ? vals.reduce((a, b) => a + b, 0) / vals.length
-                      : 0;
-                  return sum + avg;
-                }, 0);
-                return mapelOnlyHeaders.length > 0
-                  ? totalRataMapel.toFixed(2)
+              () => {
+                const perSiswa = getPerSiswaJumlah();
+                return perSiswa.length > 0
+                  ? (
+                      perSiswa.reduce((a, b) => a + b, 0) / perSiswa.length
+                    ).toFixed(2)
                   : "";
               },
-              // Data16: jumlah rata-rata semua mapel dibagi jumlah mapel
-              (_v) => {
-                const totalRataMapel = mapelOnlyHeaders.reduce((sum, mh) => {
-                  const vals = rows
-                    .map((row) => parseFloat(row[mh]))
-                    .filter((v) => !isNaN(v));
-                  const avg =
-                    vals.length > 0
-                      ? vals.reduce((a, b) => a + b, 0) / vals.length
-                      : 0;
-                  return sum + avg;
-                }, 0);
-                return mapelOnlyHeaders.length > 0
-                  ? (totalRataMapel / mapelOnlyHeaders.length).toFixed(2)
+              () => {
+                const perSiswa = getPerSiswaRata();
+                return perSiswa.length > 0
+                  ? (
+                      perSiswa.reduce((a, b) => a + b, 0) / perSiswa.length
+                    ).toFixed(2)
                   : "";
               }
             ),
@@ -12280,36 +12286,20 @@ const RekapNilai = () => {
                   v.reduce((a, b) => a + b, 0) / v.length
                 )}%`;
               },
-              // Data15: jumlah daya serap per mapel
-              (_v) => {
-                const totalDS = mapelOnlyHeaders.reduce((sum, mh) => {
-                  const vals = rows
-                    .map((row) => parseFloat(row[mh]))
-                    .filter((v) => !isNaN(v));
-                  const avg =
-                    vals.length > 0
-                      ? vals.reduce((a, b) => a + b, 0) / vals.length
-                      : 0;
-                  return sum + avg;
-                }, 0);
-                return mapelOnlyHeaders.length > 0
-                  ? `${Math.round(totalDS)}%`
+              () => {
+                const perSiswa = getPerSiswaJumlah();
+                return perSiswa.length > 0
+                  ? `${Math.round(
+                      perSiswa.reduce((a, b) => a + b, 0) / perSiswa.length
+                    )}%`
                   : "";
               },
-              // Data16: rata-rata daya serap dibagi jumlah mapel
-              (_v) => {
-                const totalDS = mapelOnlyHeaders.reduce((sum, mh) => {
-                  const vals = rows
-                    .map((row) => parseFloat(row[mh]))
-                    .filter((v) => !isNaN(v));
-                  const avg =
-                    vals.length > 0
-                      ? vals.reduce((a, b) => a + b, 0) / vals.length
-                      : 0;
-                  return sum + avg;
-                }, 0);
-                return mapelOnlyHeaders.length > 0
-                  ? `${Math.round(totalDS / mapelOnlyHeaders.length)}%`
+              () => {
+                const perSiswa = getPerSiswaRata();
+                return perSiswa.length > 0
+                  ? `${Math.round(
+                      perSiswa.reduce((a, b) => a + b, 0) / perSiswa.length
+                    )}%`
                   : "";
               }
             ),
@@ -12322,34 +12312,30 @@ const RekapNilai = () => {
                 const v = getVals(h);
                 return v.length > 0 ? String(Math.max(...v)) : "";
               },
-              // Data15: nilai terbesar dari jumlah per siswa
-              (_v) => {
-                const perSiswaJumlah = rows
-                  .map((row) => {
-                    const v = mapelOnlyHeaders
-                      .map((mh) => parseFloat(row[mh]))
-                      .filter((v) => !isNaN(v));
-                    return v.length > 0 ? v.reduce((a, b) => a + b, 0) : null;
-                  })
-                  .filter((v) => v !== null) as number[];
-                return perSiswaJumlah.length > 0
-                  ? String(Math.max(...perSiswaJumlah))
-                  : "";
+              () => {
+                const sumOfMax = mapelOnlyHeaders.reduce((sum, mh) => {
+                  const vals = rows
+                    .map((row) => parseFloat(row[mh]))
+                    .filter((v) => !isNaN(v));
+                  return sum + (vals.length > 0 ? Math.max(...vals) : 0);
+                }, 0);
+                return sumOfMax > 0 ? String(sumOfMax) : "";
               },
-              // Data16: nilai terbesar dari rata-rata per siswa
-              (_v) => {
-                const perSiswaRata = rows
-                  .map((row) => {
-                    const v = mapelOnlyHeaders
-                      .map((mh) => parseFloat(row[mh]))
-                      .filter((v) => !isNaN(v));
-                    return v.length > 0
-                      ? v.reduce((a, b) => a + b, 0) / v.length
-                      : null;
-                  })
-                  .filter((v) => v !== null) as number[];
-                return perSiswaRata.length > 0
-                  ? Math.max(...perSiswaRata).toFixed(2)
+              () => {
+                const sumOfMax = mapelOnlyHeaders.reduce((sum, mh) => {
+                  const vals = rows
+                    .map((row) => parseFloat(row[mh]))
+                    .filter((v) => !isNaN(v));
+                  return sum + (vals.length > 0 ? Math.max(...vals) : 0);
+                }, 0);
+                const activeMapelCount = mapelOnlyHeaders.filter((mh) => {
+                  const vals = rows
+                    .map((row) => parseFloat(row[mh]))
+                    .filter((v) => !isNaN(v));
+                  return vals.length > 0 && Math.max(...vals) > 0;
+                }).length;
+                return activeMapelCount > 0
+                  ? (sumOfMax / activeMapelCount).toFixed(2)
                   : "";
               }
             ),
@@ -12362,31 +12348,30 @@ const RekapNilai = () => {
                 const v = getVals(h);
                 return v.length > 0 ? String(Math.min(...v)) : "";
               },
-              // Data15: jumlah semua nilai terkecil per mapel
-              (_v) => {
-                const totalTerkecil = mapelOnlyHeaders.reduce((sum, mh) => {
+              () => {
+                const sumOfMin = mapelOnlyHeaders.reduce((sum, mh) => {
                   const vals = rows
                     .map((row) => parseFloat(row[mh]))
                     .filter((v) => !isNaN(v));
-                  const min = vals.length > 0 ? Math.min(...vals) : 0;
-                  return sum + min;
+                  return sum + (vals.length > 0 ? Math.min(...vals) : 0);
                 }, 0);
-                return mapelOnlyHeaders.length > 0 ? String(totalTerkecil) : "";
+                return sumOfMin >= 0 ? String(sumOfMin) : "";
               },
-              // Data16: nilai terkecil dari rata-rata per siswa
-              (_v) => {
-                const perSiswaRata = rows
-                  .map((row) => {
-                    const v = mapelOnlyHeaders
-                      .map((mh) => parseFloat(row[mh]))
-                      .filter((v) => !isNaN(v));
-                    return v.length > 0
-                      ? v.reduce((a, b) => a + b, 0) / v.length
-                      : null;
-                  })
-                  .filter((v) => v !== null) as number[];
-                return perSiswaRata.length > 0
-                  ? Math.min(...perSiswaRata).toFixed(2)
+              () => {
+                const sumOfMin = mapelOnlyHeaders.reduce((sum, mh) => {
+                  const vals = rows
+                    .map((row) => parseFloat(row[mh]))
+                    .filter((v) => !isNaN(v));
+                  return sum + (vals.length > 0 ? Math.min(...vals) : 0);
+                }, 0);
+                const activeMapelCount = mapelOnlyHeaders.filter((mh) => {
+                  const vals = rows
+                    .map((row) => parseFloat(row[mh]))
+                    .filter((v) => !isNaN(v));
+                  return vals.length > 0;
+                }).length;
+                return activeMapelCount > 0
+                  ? (sumOfMin / activeMapelCount).toFixed(2)
                   : "";
               }
             ),
@@ -12509,8 +12494,8 @@ const RekapNilai = () => {
         doc.setFontSize(9);
 
         // Tanggal
-        const tanggalRapor = localSchoolData?.tanggalRapor || "";
-        const kabKota = localSchoolData?.kabKota || "Bungeng";
+        const tanggalRapor = currentSchoolData?.tanggalRapor || "";
+        const kabKota = currentSchoolData?.kabKota || "Bungeng";
         if (tanggalRapor) {
           doc.text(`${kabKota}, ${tanggalRapor}`, guruX, ttdStartY);
         }
@@ -12548,8 +12533,8 @@ const RekapNilai = () => {
         }
 
         // Nama dan NIP Kepsek
-        const namaKepsek = localSchoolData?.namaKepsek || "_______________";
-        const nipKepsek = localSchoolData?.nipKepsek || "_______________";
+        const namaKepsek = currentSchoolData?.namaKepsek || "_______________";
+        const nipKepsek = currentSchoolData?.nipKepsek || "_______________";
         doc.setFont("helvetica", "bold");
         doc.text(namaKepsek, kepsekX, ttdStartY + 25);
         doc.setLineWidth(0.3);
@@ -12564,8 +12549,8 @@ const RekapNilai = () => {
         doc.text(`NIP. ${nipKepsek}`, kepsekX, ttdStartY + 30);
 
         // Nama dan NIP Guru
-        const namaGuru = localSchoolData?.namaGuru || "_______________";
-        const nipGuru = localSchoolData?.nipGuru || "_______________";
+        const namaGuru = currentSchoolData?.namaGuru || "_______________";
+        const nipGuru = currentSchoolData?.nipGuru || "_______________";
         doc.setFont("helvetica", "bold");
         doc.text(namaGuru, guruX, ttdStartY + 25);
         doc.setLineWidth(0.3);
@@ -12573,7 +12558,7 @@ const RekapNilai = () => {
         doc.line(guruX, ttdStartY + 26, guruX + guruTextW, ttdStartY + 26);
         doc.setFont("helvetica", "normal");
         doc.text(`NIP. ${nipGuru}`, guruX, ttdStartY + 30);
-      });
+      }
 
       // Nomor halaman
       const totalPages = doc.getNumberOfPages();
@@ -12817,6 +12802,10 @@ const RekapNilai = () => {
 
       y += 6;
       doc.text("DINAS PENDIDIKAN", centerX, y, { align: "center" });
+
+      y += 6;
+      doc.setFontSize(15);
+      doc.text("KOORDINATOR WILAYAH DIKPORA KECAMATAN BISSAPPU", centerX, y, { align: "center" });
 
       y += 7;
       doc.setFontSize(15);
@@ -14293,7 +14282,7 @@ const RekapNilai = () => {
 
               // Kolom mapel murni (tidak termasuk Data15, Data16, Data17)
               const mapelOnlyHeaders = nilaiHeaders.filter(
-                (h) => !["Data16", "Data17"].includes(h)
+                (h) => !["Data16", "Data17", "Data18"].includes(h)
               );
 
               // Hitung horizontal untuk kolom Data15 dan Data16
@@ -14429,22 +14418,10 @@ const RekapNilai = () => {
                 return vals.length > 0 ? Math.min(...vals) : "";
               });
 
-              // Gabungkan base values dengan horizontal untuk Data15/Data16
               const jumlahFinal = nilaiHeaders.map((h) => {
-                if (h === "Data15") {
-                  const vals = filteredData
-                    .map((row) => {
-                      const v = mapelOnlyHeaders
-                        .map((mh) => parseFloat(row[mh]))
-                        .filter((v) => !isNaN(v));
-                      return v.length > 0 ? v.reduce((a, b) => a + b, 0) : null;
-                    })
-                    .filter((v) => v !== null) as number[];
-                  return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) : "";
-                }
                 if (h === "Data16") {
-                  // Total jumlah semua siswa dibagi jumlah mapel
-                  const totalJumlah = filteredData
+                  // Data16=JUMLAH: total jumlah mapel per siswa dijumlahkan
+                  const perSiswa = filteredData
                     .map((row) => {
                       const v = mapelOnlyHeaders
                         .map((mh) => parseFloat(row[mh]))
@@ -14452,9 +14429,24 @@ const RekapNilai = () => {
                       return v.length > 0 ? v.reduce((a, b) => a + b, 0) : null;
                     })
                     .filter((v) => v !== null) as number[];
-                  const grandTotal = totalJumlah.reduce((a, b) => a + b, 0);
-                  return mapelOnlyHeaders.length > 0
-                    ? (grandTotal / mapelOnlyHeaders.length).toFixed(2)
+                  return perSiswa.length > 0
+                    ? perSiswa.reduce((a, b) => a + b, 0)
+                    : "";
+                }
+                if (h === "Data17") {
+                  // Data17=RATA-RATA: rata-rata dari jumlah per siswa
+                  const perSiswa = filteredData
+                    .map((row) => {
+                      const v = mapelOnlyHeaders
+                        .map((mh) => parseFloat(row[mh]))
+                        .filter((v) => !isNaN(v));
+                      return v.length > 0 ? v.reduce((a, b) => a + b, 0) : null;
+                    })
+                    .filter((v) => v !== null) as number[];
+                  return perSiswa.length > 0
+                    ? (
+                        perSiswa.reduce((a, b) => a + b, 0) / perSiswa.length
+                      ).toFixed(2)
                     : "";
                 }
                 const idx = mapelOnlyHeaders.indexOf(h);
@@ -14462,36 +14454,38 @@ const RekapNilai = () => {
               });
 
               const rataRataFinal = nilaiHeaders.map((h) => {
-                if (h === "Data15") {
-                  // Jumlah semua rata-rata per mapel
-                  const totalRataMapel = mapelOnlyHeaders.reduce((sum, mh) => {
-                    const vals = filteredData
-                      .map((row: RowData) => parseFloat(row[mh]))
-                      .filter((v) => !isNaN(v));
-                    const avg =
-                      vals.length > 0
-                        ? vals.reduce((a, b) => a + b, 0) / vals.length
-                        : 0;
-                    return sum + avg;
-                  }, 0);
-                  return mapelOnlyHeaders.length > 0
-                    ? totalRataMapel.toFixed(2)
+                if (h === "Data16") {
+                  // Data16=JUMLAH: rata-rata dari jumlah per siswa
+                  const perSiswa = filteredData
+                    .map((row) => {
+                      const v = mapelOnlyHeaders
+                        .map((mh) => parseFloat(row[mh]))
+                        .filter((v) => !isNaN(v));
+                      return v.length > 0 ? v.reduce((a, b) => a + b, 0) : null;
+                    })
+                    .filter((v) => v !== null) as number[];
+                  return perSiswa.length > 0
+                    ? (
+                        perSiswa.reduce((a, b) => a + b, 0) / perSiswa.length
+                      ).toFixed(2)
                     : "";
                 }
-                if (h === "Data16") {
-                  // Jumlah rata-rata semua mapel dibagi jumlah mapel
-                  const totalRataMapel = mapelOnlyHeaders.reduce((sum, mh) => {
-                    const vals = filteredData
-                      .map((row: RowData) => parseFloat(row[mh]))
-                      .filter((v) => !isNaN(v));
-                    const avg =
-                      vals.length > 0
-                        ? vals.reduce((a, b) => a + b, 0) / vals.length
-                        : 0;
-                    return sum + avg;
-                  }, 0);
-                  return mapelOnlyHeaders.length > 0
-                    ? (totalRataMapel / mapelOnlyHeaders.length).toFixed(2)
+                if (h === "Data17") {
+                  // Data17=RATA-RATA: rata-rata dari rata-rata per siswa
+                  const perSiswa = filteredData
+                    .map((row) => {
+                      const v = mapelOnlyHeaders
+                        .map((mh) => parseFloat(row[mh]))
+                        .filter((v) => !isNaN(v));
+                      return v.length > 0
+                        ? v.reduce((a, b) => a + b, 0) / v.length
+                        : null;
+                    })
+                    .filter((v) => v !== null) as number[];
+                  return perSiswa.length > 0
+                    ? (
+                        perSiswa.reduce((a, b) => a + b, 0) / perSiswa.length
+                      ).toFixed(2)
                     : "";
                 }
                 const idx = mapelOnlyHeaders.indexOf(h);
@@ -14499,36 +14493,36 @@ const RekapNilai = () => {
               });
 
               const dayaSerapFinal = nilaiHeaders.map((h) => {
-                if (h === "Data15") {
-                  // Jumlah daya serap per mapel (rata-rata per mapel dalam %)
-                  const totalDayaSerap = mapelOnlyHeaders.reduce((sum, mh) => {
-                    const vals = filteredData
-                      .map((row: RowData) => parseFloat(row[mh]))
-                      .filter((v) => !isNaN(v));
-                    const avg =
-                      vals.length > 0
-                        ? vals.reduce((a, b) => a + b, 0) / vals.length
-                        : 0;
-                    return sum + avg;
-                  }, 0);
-                  return mapelOnlyHeaders.length > 0
-                    ? `${Math.round(totalDayaSerap)}%`
+                if (h === "Data16") {
+                  const perSiswa = filteredData
+                    .map((row) => {
+                      const v = mapelOnlyHeaders
+                        .map((mh) => parseFloat(row[mh]))
+                        .filter((v) => !isNaN(v));
+                      return v.length > 0 ? v.reduce((a, b) => a + b, 0) : null;
+                    })
+                    .filter((v) => v !== null) as number[];
+                  return perSiswa.length > 0
+                    ? `${Math.round(
+                        perSiswa.reduce((a, b) => a + b, 0) / perSiswa.length
+                      )}%`
                     : "";
                 }
-                if (h === "Data16") {
-                  // Rata-rata daya serap semua mapel dibagi jumlah mapel
-                  const totalDayaSerap = mapelOnlyHeaders.reduce((sum, mh) => {
-                    const vals = filteredData
-                      .map((row: RowData) => parseFloat(row[mh]))
-                      .filter((v) => !isNaN(v));
-                    const avg =
-                      vals.length > 0
-                        ? vals.reduce((a, b) => a + b, 0) / vals.length
-                        : 0;
-                    return sum + avg;
-                  }, 0);
-                  return mapelOnlyHeaders.length > 0
-                    ? `${Math.round(totalDayaSerap / mapelOnlyHeaders.length)}%`
+                if (h === "Data17") {
+                  const perSiswa = filteredData
+                    .map((row) => {
+                      const v = mapelOnlyHeaders
+                        .map((mh) => parseFloat(row[mh]))
+                        .filter((v) => !isNaN(v));
+                      return v.length > 0
+                        ? v.reduce((a, b) => a + b, 0) / v.length
+                        : null;
+                    })
+                    .filter((v) => v !== null) as number[];
+                  return perSiswa.length > 0
+                    ? `${Math.round(
+                        perSiswa.reduce((a, b) => a + b, 0) / perSiswa.length
+                      )}%`
                     : "";
                 }
                 const idx = mapelOnlyHeaders.indexOf(h);
@@ -14536,34 +14530,30 @@ const RekapNilai = () => {
               });
 
               const nilaiTerbesarFinal = nilaiHeaders.map((h) => {
-                if (h === "Data15") {
-                  // Nilai terbesar dari jumlah nilai per siswa
-                  const perSiswaJumlah = filteredData
-                    .map((row: RowData) => {
-                      const v = mapelOnlyHeaders
-                        .map((mh) => parseFloat(row[mh]))
-                        .filter((v) => !isNaN(v));
-                      return v.length > 0 ? v.reduce((a, b) => a + b, 0) : null;
-                    })
-                    .filter((v) => v !== null) as number[];
-                  return perSiswaJumlah.length > 0
-                    ? Math.max(...perSiswaJumlah)
-                    : "";
-                }
                 if (h === "Data16") {
-                  // Nilai terbesar dari rata-rata per siswa
-                  const perSiswaRata = filteredData
-                    .map((row: RowData) => {
-                      const v = mapelOnlyHeaders
-                        .map((mh) => parseFloat(row[mh]))
-                        .filter((v) => !isNaN(v));
-                      return v.length > 0
-                        ? v.reduce((a, b) => a + b, 0) / v.length
-                        : null;
-                    })
-                    .filter((v) => v !== null) as number[];
-                  return perSiswaRata.length > 0
-                    ? Math.max(...perSiswaRata).toFixed(2)
+                  const sumOfMax = mapelOnlyHeaders.reduce((sum, mh) => {
+                    const vals = filteredData
+                      .map((row) => parseFloat(row[mh]))
+                      .filter((v) => !isNaN(v));
+                    return sum + (vals.length > 0 ? Math.max(...vals) : 0);
+                  }, 0);
+                  return sumOfMax > 0 ? sumOfMax : "";
+                }
+                if (h === "Data17") {
+                  const sumOfMax = mapelOnlyHeaders.reduce((sum, mh) => {
+                    const vals = filteredData
+                      .map((row) => parseFloat(row[mh]))
+                      .filter((v) => !isNaN(v));
+                    return sum + (vals.length > 0 ? Math.max(...vals) : 0);
+                  }, 0);
+                  const activeMapelCount = mapelOnlyHeaders.filter((mh) => {
+                    const vals = filteredData
+                      .map((row) => parseFloat(row[mh]))
+                      .filter((v) => !isNaN(v));
+                    return vals.length > 0 && Math.max(...vals) > 0;
+                  }).length;
+                  return activeMapelCount > 0
+                    ? (sumOfMax / activeMapelCount).toFixed(2)
                     : "";
                 }
                 const idx = mapelOnlyHeaders.indexOf(h);
@@ -14571,33 +14561,30 @@ const RekapNilai = () => {
               });
 
               const nilaiTerkecilFinal = nilaiHeaders.map((h) => {
-                if (h === "Data15") {
-                  // Jumlah semua nilai terkecil per mapel
-                  const totalTerkecil = mapelOnlyHeaders.reduce((sum, mh) => {
-                    const vals = filteredData
-                      .map((row: RowData) => parseFloat(row[mh]))
-                      .filter((v) => !isNaN(v));
-                    const min = vals.length > 0 ? Math.min(...vals) : 0;
-                    return sum + min;
-                  }, 0);
-                  return mapelOnlyHeaders.length > 0
-                    ? String(totalTerkecil)
-                    : "";
-                }
                 if (h === "Data16") {
-                  // Nilai terkecil dari rata-rata per siswa
-                  const perSiswaRata = filteredData
-                    .map((row: RowData) => {
-                      const v = mapelOnlyHeaders
-                        .map((mh) => parseFloat(row[mh]))
-                        .filter((v) => !isNaN(v));
-                      return v.length > 0
-                        ? v.reduce((a, b) => a + b, 0) / v.length
-                        : null;
-                    })
-                    .filter((v) => v !== null) as number[];
-                  return perSiswaRata.length > 0
-                    ? Math.min(...perSiswaRata).toFixed(2)
+                  const sumOfMin = mapelOnlyHeaders.reduce((sum, mh) => {
+                    const vals = filteredData
+                      .map((row) => parseFloat(row[mh]))
+                      .filter((v) => !isNaN(v));
+                    return sum + (vals.length > 0 ? Math.min(...vals) : 0);
+                  }, 0);
+                  return sumOfMin >= 0 ? String(sumOfMin) : "";
+                }
+                if (h === "Data17") {
+                  const sumOfMin = mapelOnlyHeaders.reduce((sum, mh) => {
+                    const vals = filteredData
+                      .map((row) => parseFloat(row[mh]))
+                      .filter((v) => !isNaN(v));
+                    return sum + (vals.length > 0 ? Math.min(...vals) : 0);
+                  }, 0);
+                  const activeMapelCount = mapelOnlyHeaders.filter((mh) => {
+                    const vals = filteredData
+                      .map((row) => parseFloat(row[mh]))
+                      .filter((v) => !isNaN(v));
+                    return vals.length > 0;
+                  }).length;
+                  return activeMapelCount > 0
+                    ? (sumOfMin / activeMapelCount).toFixed(2)
                     : "";
                 }
                 const idx = mapelOnlyHeaders.indexOf(h);
