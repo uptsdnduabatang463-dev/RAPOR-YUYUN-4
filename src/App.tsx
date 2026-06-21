@@ -805,15 +805,168 @@ const InputNilai = () => {
     };
   }, [showFloatingButton, activeInput]);
 
+  const calculateNilaiRapor = (rowData: any): string => {
+    const tpCols = [
+      "Data5",
+      "Data6",
+      "Data7",
+      "Data8",
+      "Data9",
+      "Data10",
+      "Data11",
+      "Data12",
+      "Data13",
+      "Data14",
+    ];
+    const babCols = ["Data15", "Data16", "Data17", "Data18", "Data19"];
+
+    // ✅ Hitung jumlah kolom AKTIF dari header (bukan dari nilai yang terisi)
+    // data[0] adalah row header display (e.g. "5.1", "5.2", "-", ...)
+    const activeTpCols = tpCols.filter((c) => {
+      const display = data[0]?.[c];
+      return display && display !== "-" && display !== "";
+    });
+    const activeBabCols = babCols.filter((c) => {
+      const display = data[0]?.[c];
+      return display && display !== "-" && display !== "";
+    });
+
+    const nilaiSAS = parseFloat(rowData["Data22"]);
+
+    // Jika tidak ada kolom aktif sama sekali dan SAS kosong, return ""
+    if (
+      activeTpCols.length === 0 &&
+      activeBabCols.length === 0 &&
+      isNaN(nilaiSAS)
+    ) {
+      return "";
+    }
+
+    // ✅ Jumlahkan nilai yang terisi, tapi BAGI dengan jumlah kolom AKTIF
+    const tpSum = activeTpCols.reduce((sum, c) => {
+      const val = parseFloat(rowData[c]);
+      return sum + (isNaN(val) ? 0 : val);
+    }, 0);
+
+    const babSum = activeBabCols.reduce((sum, c) => {
+      const val = parseFloat(rowData[c]);
+      return sum + (isNaN(val) ? 0 : val);
+    }, 0);
+
+    // Bagi dengan jumlah kolom AKTIF (bukan jumlah yang terisi)
+    const avgTP = activeTpCols.length > 0 ? tpSum / activeTpCols.length : 0;
+    const avgBAB = activeBabCols.length > 0 ? babSum / activeBabCols.length : 0;
+    const sas = !isNaN(nilaiSAS) ? nilaiSAS : 0;
+
+    const nilaiRapor = (sas * 2 + avgTP + avgBAB) / 4;
+    return parseFloat(nilaiRapor.toFixed(2)).toString();
+  };
+
   const handleInputChange = (
     rowIndex: number,
     header: string,
     value: string
   ) => {
+    // ✅ Kolom nilai: hanya angka, max 100
+    const nilaiCols = [
+      "Data5",
+      "Data6",
+      "Data7",
+      "Data8",
+      "Data9",
+      "Data10",
+      "Data11",
+      "Data12",
+      "Data13",
+      "Data14",
+      "Data15",
+      "Data16",
+      "Data17",
+      "Data18",
+      "Data19",
+      "Data22",
+    ];
+
+    if (nilaiCols.includes(header)) {
+      // Tolak jika mengandung huruf atau karakter selain angka
+      if (value !== "" && !/^\d+$/.test(value)) return;
+      // Tolak jika melebihi 100
+      if (value !== "" && parseInt(value) > 100) return;
+    }
+
     const updatedData = [...data];
     updatedData[rowIndex + 1][header] = value;
+
+    // ✅ Hitung ulang Data24 (Nilai Rapor) otomatis setiap ada perubahan
+    const affectedCols = [
+      "Data5",
+      "Data6",
+      "Data7",
+      "Data8",
+      "Data9",
+      "Data10",
+      "Data11",
+      "Data12",
+      "Data13",
+      "Data14",
+      "Data15",
+      "Data16",
+      "Data17",
+      "Data18",
+      "Data19",
+      "Data22",
+    ];
+
+    if (affectedCols.includes(header)) {
+      const newNilaiRapor = calculateNilaiRapor(updatedData[rowIndex + 1]);
+      updatedData[rowIndex + 1]["Data24"] = newNilaiRapor;
+    }
+
+    // ✅ Hitung ulang ranking semua siswa berdasarkan Data24 terbaru
+    const allRows = updatedData.slice(1); // skip header row
+
+    // Buat array { index, nilai } hanya untuk siswa yang punya nilai rapor
+    const rowsWithNilai = allRows
+      .map((row: any, idx: number) => ({
+        idx,
+        nilai: parseFloat(row["Data24"]),
+      }))
+      .filter((item: any) => !isNaN(item.nilai) && item.nilai > 0);
+
+    // Urutkan descending (nilai tertinggi = ranking 1)
+    rowsWithNilai.sort((a: any, b: any) => b.nilai - a.nilai);
+
+    // Tangani nilai sama (dense ranking: nilai sama → ranking sama, lanjut berikutnya)
+    let currentRank = 1;
+    rowsWithNilai.forEach((item: any, i: number) => {
+      if (i > 0 && item.nilai === rowsWithNilai[i - 1].nilai) {
+        // Nilai sama dengan sebelumnya → ranking sama
+        updatedData[item.idx + 1]["Data25"] = String(currentRank);
+      } else {
+        currentRank = i + 1;
+        updatedData[item.idx + 1]["Data25"] = String(currentRank);
+      }
+    });
+
+    // Siswa yang belum punya nilai rapor → ranking dikosongkan
+    allRows.forEach((row: any, idx: number) => {
+      const nilai = parseFloat(row["Data24"]);
+      if (isNaN(nilai) || nilai <= 0) {
+        updatedData[idx + 1]["Data25"] = "";
+      }
+    });
+
+    // Tandai semua baris yang rankingnya berubah sebagai changed
+    const newChangedRows = new Set(Array.from(changedRows));
+    newChangedRows.add(rowIndex);
+    allRows.forEach((_: any, idx: number) => {
+      if (updatedData[idx + 1]["Data25"] !== data[idx + 1]["Data25"]) {
+        newChangedRows.add(idx);
+      }
+    });
+
     setData(updatedData);
-    setChangedRows((prev) => new Set([...Array.from(prev), rowIndex]));
+    setChangedRows(newChangedRows);
   };
 
   const handleKeyDown = (
@@ -847,12 +1000,12 @@ const InputNilai = () => {
 
     const updates: Array<{ rowIndex: number; values: string[] }> = [];
 
-    changedRows.forEach((rowIndex) => {
-      const rowData = data[rowIndex + 1];
+    // ✅ Kirim SEMUA baris (bukan hanya changedRows) agar ranking sinkron
+    actualData.forEach((rowData: any, rowIndex: number) => {
       const values = headers.map((header) => rowData[header] || "");
-
-      // ✅ PERBAIKAN: Gunakan rowMapping untuk mendapatkan row index asli di sheet
       const originalRowIndex = rowMapping[rowIndex];
+
+      if (!originalRowIndex) return;
 
       console.log(
         `📝 Saving row ${rowIndex} (UI) -> Row ${originalRowIndex} (Sheet):`,
@@ -860,7 +1013,7 @@ const InputNilai = () => {
       );
 
       updates.push({
-        rowIndex: originalRowIndex + 1, // +1 karena sheet row dimulai dari 1, bukan 0
+        rowIndex: originalRowIndex + 1,
         values: values,
       });
     });
@@ -906,13 +1059,9 @@ const InputNilai = () => {
       setActiveInput(null);
       setIsEditMode(false);
       setOriginalData([]);
-
-      // Reload data dari server
-      await loadSheetData(selectedSheet);
-
       setIsSaving(false);
 
-      // Background refresh untuk RekapNilai
+      // Background refresh untuk RekapNilai (tanpa reload halaman)
       setTimeout(() => {
         console.log("🔄 Background refresh RekapNilai...");
         refreshRekapData(true);
@@ -955,8 +1104,37 @@ const InputNilai = () => {
         throw new Error(`HTTP error! status: ${response.status}`);
 
       alert("✅ Semua nilai berhasil dihapus!");
+
+      // ✅ Bersihkan Data24 dan Data25 di UI tanpa reload
+      const clearedData = [...data];
+      const colsToClear = [
+        "Data5",
+        "Data6",
+        "Data7",
+        "Data8",
+        "Data9",
+        "Data10",
+        "Data11",
+        "Data12",
+        "Data13",
+        "Data14",
+        "Data15",
+        "Data16",
+        "Data17",
+        "Data18",
+        "Data19",
+        "Data22",
+        "Data24",
+        "Data25",
+      ];
+      clearedData.slice(1).forEach((_: any, idx: number) => {
+        colsToClear.forEach((col) => {
+          clearedData[idx + 1][col] = "";
+        });
+      });
+
+      setData(clearedData);
       setChangedRows(new Set());
-      await loadSheetData(selectedSheet);
       setTimeout(() => refreshRekapData(true), 2000);
     } catch (err) {
       alert(
@@ -2717,8 +2895,32 @@ const InputNilai = () => {
                         <input
                           id={`input-${rowIndex}-${colIndex}`}
                           type="text"
-                          inputMode={header === "Data32" ? "text" : "decimal"}
+                          inputMode={header === "Data32" ? "text" : "numeric"}
                           pattern={header === "Data32" ? undefined : "[0-9]*"}
+                          onKeyPress={(e) => {
+                            const nilaiCols = [
+                              "Data5",
+                              "Data6",
+                              "Data7",
+                              "Data8",
+                              "Data9",
+                              "Data10",
+                              "Data11",
+                              "Data12",
+                              "Data13",
+                              "Data14",
+                              "Data15",
+                              "Data16",
+                              "Data17",
+                              "Data18",
+                              "Data19",
+                              "Data22",
+                            ];
+                            if (nilaiCols.includes(header)) {
+                              // Blok semua karakter selain angka 0-9
+                              if (!/[0-9]/.test(e.key)) e.preventDefault();
+                            }
+                          }}
                           value={row[header] || ""}
                           disabled={!isEditMode}
                           onChange={(e) =>
@@ -7997,6 +8199,18 @@ const InputTP = () => {
   );
 };
 
+const MAPEL_OPTIONS = [
+  "PENDIDIKAN AGAMA ISLAM",
+  "PENDIDIKAN PANCASILA",
+  "BAHASA INDONESIA",
+  "MATEMATIKA",
+  "ILMU PENGETAHUAN ALAM DAN SOSIAL",
+  "SENI BUDAYA",
+  "PENDIDIKAN JASMANI, OLAHRAGA DAN KESEHATAN",
+  "BAHASA INGGRIS",
+  "BAHASA DAERAH MAKASSAR",
+];
+
 const DataMapel = () => {
   const [data, setData] = useState<RowData[]>([]);
   const [changedRows, setChangedRows] = useState<Set<number>>(new Set());
@@ -8005,6 +8219,12 @@ const DataMapel = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [newMapel, setNewMapel] = useState("");
+  const [editingRow, setEditingRow] = useState<number | null>(null);
+  const [originalMapelData, setOriginalMapelData] = useState<{
+    [key: number]: RowData;
+  }>({});
+  const [isCustomNewMapel, setIsCustomNewMapel] = useState(false);
+  const [isCustomEditMapel, setIsCustomEditMapel] = useState(false);
 
   // ✅ Gunakan data dari context
   const { mapelListData, refreshRekapData, updateLocalData } = useRekapData();
@@ -8133,8 +8353,8 @@ const DataMapel = () => {
       updateLocalData("mapel", updatedData); // ✅ BARIS BARU
 
       setNewMapel("");
+      setIsCustomNewMapel(false);
       setIsAddingNew(false);
-
       // Kembalikan tombol dulu, refresh di background
       setIsSaving(false);
 
@@ -8313,20 +8533,52 @@ const DataMapel = () => {
           <h3 style={{ marginBottom: "15px", color: "#2196F3" }}>
             Form Tambah Mata Pelajaran Baru
           </h3>
-          <input
-            type="text"
-            value={newMapel}
-            onChange={(e) => setNewMapel(e.target.value)}
-            placeholder="Contoh: BAHASA INGGRIS"
+          <select
+            value={isCustomNewMapel ? "__LAINNYA__" : newMapel}
+            onChange={(e) => {
+              if (e.target.value === "__LAINNYA__") {
+                setIsCustomNewMapel(true);
+                setNewMapel("");
+              } else {
+                setIsCustomNewMapel(false);
+                setNewMapel(e.target.value);
+              }
+            }}
             style={{
               width: "100%",
               padding: "12px",
               border: "1px solid #ddd",
               borderRadius: "4px",
               fontSize: "16px",
-              marginBottom: "15px",
+              marginBottom: isCustomNewMapel ? "10px" : "15px",
+              backgroundColor: "white",
             }}
-          />
+          >
+            <option value="">-- Pilih Mata Pelajaran --</option>
+            {MAPEL_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+            <option value="__LAINNYA__">Lainnya (isi manual)</option>
+          </select>
+
+          {isCustomNewMapel && (
+            <input
+              type="text"
+              value={newMapel}
+              onChange={(e) => setNewMapel(e.target.value)}
+              placeholder="Ketik nama Mata Pelajaran"
+              style={{
+                width: "100%",
+                padding: "12px",
+                border: "1px solid #2196F3",
+                borderRadius: "4px",
+                fontSize: "16px",
+                marginBottom: "15px",
+              }}
+            />
+          )}
           <button
             onClick={handleAddNew}
             disabled={isSaving}
@@ -8405,22 +8657,93 @@ const DataMapel = () => {
                   {rowIndex + 1}
                 </td>
                 <td style={{ padding: "8px", borderBottom: "1px solid #eee" }}>
-                  <input
-                    type="text"
-                    value={row.Data1 || ""}
-                    onChange={(e) =>
-                      handleInputChange(rowIndex, "Data1", e.target.value)
-                    }
-                    style={{
-                      width: "100%",
-                      padding: "8px",
-                      border: "1px solid #ddd",
-                      borderRadius: "4px",
-                      fontSize: "14px",
-                    }}
-                  />
+                  {editingRow === rowIndex ? (
+                    <>
+                      <select
+                        value={
+                          isCustomEditMapel
+                            ? "__LAINNYA__"
+                            : MAPEL_OPTIONS.includes(row.Data1)
+                            ? row.Data1
+                            : row.Data1
+                            ? "__LAINNYA__"
+                            : ""
+                        }
+                        onChange={(e) => {
+                          if (e.target.value === "__LAINNYA__") {
+                            setIsCustomEditMapel(true);
+                            handleInputChange(rowIndex, "Data1", "");
+                          } else {
+                            setIsCustomEditMapel(false);
+                            handleInputChange(
+                              rowIndex,
+                              "Data1",
+                              e.target.value
+                            );
+                          }
+                        }}
+                        style={{
+                          width: "100%",
+                          padding: "8px",
+                          border: "1px solid #2196F3",
+                          borderRadius: "4px",
+                          fontSize: "14px",
+                          backgroundColor: "white",
+                          marginBottom:
+                            isCustomEditMapel ||
+                            (!MAPEL_OPTIONS.includes(row.Data1) && row.Data1)
+                              ? "6px"
+                              : "0",
+                        }}
+                      >
+                        <option value="">-- Pilih Mata Pelajaran --</option>
+                        {MAPEL_OPTIONS.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                        <option value="__LAINNYA__">
+                          Lainnya (isi manual)
+                        </option>
+                      </select>
+
+                      {(isCustomEditMapel ||
+                        (!MAPEL_OPTIONS.includes(row.Data1) && row.Data1)) && (
+                        <input
+                          type="text"
+                          value={row.Data1 || ""}
+                          onChange={(e) =>
+                            handleInputChange(rowIndex, "Data1", e.target.value)
+                          }
+                          placeholder="Ketik nama Mata Pelajaran"
+                          style={{
+                            width: "100%",
+                            padding: "8px",
+                            border: "1px solid #2196F3",
+                            borderRadius: "4px",
+                            fontSize: "14px",
+                          }}
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <input
+                      type="text"
+                      value={row.Data1 || ""}
+                      disabled
+                      style={{
+                        width: "100%",
+                        padding: "8px",
+                        border: "1px solid #eee",
+                        borderRadius: "4px",
+                        fontSize: "14px",
+                        backgroundColor: "#f5f5f5",
+                        color: "#666",
+                        cursor: "not-allowed",
+                      }}
+                    />
+                  )}
                 </td>
-                {/* ✅ KOLOM AKSI BARU */}
                 <td
                   style={{
                     padding: "8px",
@@ -8428,22 +8751,113 @@ const DataMapel = () => {
                     textAlign: "center",
                   }}
                 >
-                  <button
-                    onClick={() => handleDelete(rowIndex)}
-                    disabled={isSaving}
+                  <div
                     style={{
-                      padding: "8px 16px",
-                      backgroundColor: isSaving ? "#ccc" : "#f44336",
-                      color: "white",
-                      border: "none",
-                      borderRadius: "4px",
-                      cursor: isSaving ? "not-allowed" : "pointer",
-                      fontSize: "14px",
-                      fontWeight: "bold",
+                      display: "flex",
+                      gap: "6px",
+                      justifyContent: "center",
                     }}
                   >
-                    🗑️ Hapus
-                  </button>
+                    {editingRow === rowIndex ? (
+                      // Mode edit: tampilkan tombol Simpan dan Batal
+                      <>
+                        <button
+                          onClick={() => {
+                            handleSaveAll();
+                            setEditingRow(null);
+                            setIsCustomEditMapel(false);
+                          }}
+                          disabled={isSaving}
+                          style={{
+                            padding: "6px 12px",
+                            backgroundColor: isSaving ? "#ccc" : "#4CAF50",
+                            color: "white",
+                            border: "none",
+                            borderRadius: "4px",
+                            cursor: isSaving ? "not-allowed" : "pointer",
+                            fontSize: "13px",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          💾
+                        </button>
+                        <button
+                          onClick={() => {
+                            // Kembalikan nilai asli
+                            const restoredData = [...data];
+                            restoredData[rowIndex + 1] = {
+                              ...originalMapelData[rowIndex],
+                            };
+                            setData(restoredData);
+                            setChangedRows((prev) => {
+                              const next = new Set(Array.from(prev));
+                              next.delete(rowIndex);
+                              return next;
+                            });
+                            setEditingRow(null);
+                            setIsCustomEditMapel(false);
+                          }}
+                          disabled={isSaving}
+                          style={{
+                            padding: "6px 12px",
+                            backgroundColor: "#FF9800",
+                            color: "white",
+                            border: "none",
+                            borderRadius: "4px",
+                            cursor: "pointer",
+                            fontSize: "13px",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          ❌
+                        </button>
+                      </>
+                    ) : (
+                      // Mode normal: tampilkan tombol Edit dan Hapus
+                      <>
+                        <button
+                          onClick={() => {
+                            // Simpan data asli sebelum edit
+                            setOriginalMapelData((prev) => ({
+                              ...prev,
+                              [rowIndex]: { ...actualData[rowIndex] },
+                            }));
+                            setIsCustomEditMapel(false);
+                            setEditingRow(rowIndex);
+                          }}
+                          disabled={isSaving}
+                          style={{
+                            padding: "6px 12px",
+                            backgroundColor: isSaving ? "#ccc" : "#2196F3",
+                            color: "white",
+                            border: "none",
+                            borderRadius: "4px",
+                            cursor: isSaving ? "not-allowed" : "pointer",
+                            fontSize: "13px",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={() => handleDelete(rowIndex)}
+                          disabled={isSaving}
+                          style={{
+                            padding: "6px 12px",
+                            backgroundColor: isSaving ? "#ccc" : "#f44336",
+                            color: "white",
+                            border: "none",
+                            borderRadius: "4px",
+                            cursor: isSaving ? "not-allowed" : "pointer",
+                            fontSize: "13px",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          🗑️
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -11480,6 +11894,7 @@ const RekapNilai = () => {
   const [previewSiswa, setPreviewSiswa] = useState<any>(null);
   const [isDownloadingAll, setIsDownloadingAll] = useState(false);
   const [isDownloadingExcel, setIsDownloadingExcel] = useState(false);
+  const [paperSize, setPaperSize] = useState<"a4" | "f4">("a4");
   const [localSchoolData, setLocalSchoolData] = useState<SchoolData | null>(
     null
   );
@@ -11951,13 +12366,17 @@ const RekapNilai = () => {
     }
 
     try {
-      const doc = new jsPDF({
-        orientation: "landscape",
-        unit: "mm",
-        format: "a4",
-      });
-      const pageW = 297;
-      const pageH = 210;
+      const rekapPaperConfig = paperSize === "f4"
+  ? { w: 330.2, h: 215.9, format: [330.2, 215.9] as [number, number] }
+  : { w: 297, h: 210, format: "a4" as const };
+
+const doc = new jsPDF({
+  orientation: "landscape",
+  unit: "mm",
+  format: rekapPaperConfig.format,
+});
+const pageW = rekapPaperConfig.w;
+const pageH = rekapPaperConfig.h;
       const margin = 10;
 
       const allHeaders = [
@@ -12595,14 +13014,18 @@ const RekapNilai = () => {
     const nisn = rowData.Data4 || "-";
     const nis = rowData.Data3 || "-";
 
-    const doc = new jsPDF({
-      orientation: "portrait",
-      unit: "mm",
-      format: "a4",
-    });
+    const sampulPaperConfig = paperSize === "f4"
+  ? { width: 215.9, height: 330.2, format: [215.9, 330.2] as [number, number] }
+  : { width: 210, height: 297, format: "a4" as const };
 
-    const pageW = 210;
-    const pageH = 297;
+const doc = new jsPDF({
+  orientation: "portrait",
+  unit: "mm",
+  format: sampulPaperConfig.format,
+});
+
+const pageW = sampulPaperConfig.width;
+const pageH = sampulPaperConfig.height;
     const margin = 20;
 
     // ─── BORDER LUAR (garis tebal) ───
@@ -12748,14 +13171,18 @@ const RekapNilai = () => {
     }
 
     try {
-      const doc = new jsPDF({
-        orientation: "landscape",
-        unit: "mm",
-        format: "a4",
-      });
+      const piagamPaperConfig = paperSize === "f4"
+  ? { w: 330.2, h: 215.9, format: [330.2, 215.9] as [number, number] }
+  : { w: 297, h: 210, format: "a4" as const };
 
-      const pageW = 297;
-      const pageH = 210;
+const doc = new jsPDF({
+  orientation: "landscape",
+  unit: "mm",
+  format: piagamPaperConfig.format,
+});
+
+const pageW = piagamPaperConfig.w;
+const pageH = piagamPaperConfig.h;
       const margin = 8;
       const centerX = pageW / 2;
 
@@ -13056,7 +13483,17 @@ const RekapNilai = () => {
     });
 
     try {
-      const doc = new jsPDF();
+      // Ukuran kertas: A4 = 210x297mm, F4/Legal = 215.9x330.2mm
+const paperConfig = paperSize === "f4"
+? { width: 215.9, height: 330.2, format: [215.9, 330.2] as [number, number] }
+: { width: 210, height: 297, format: "a4" as const };
+const doc = new jsPDF({
+  orientation: "portrait",
+  unit: "mm",
+  format: paperConfig.format,
+});
+const PAGE_W = paperConfig.width;
+const PAGE_H = paperConfig.height;
 
       const namaSiswa = rowData.Data1 || "-";
       let kelas = rowData.Data2 || "-";
@@ -13288,7 +13725,7 @@ const RekapNilai = () => {
         }
       }
 
-      const remainingSpace = 297 - additionalY;
+      const remainingSpace = PAGE_H - additionalY;
       const estimatedTableHeight = 30;
 
       if (remainingSpace < estimatedTableHeight + 60) {
@@ -13358,7 +13795,7 @@ const RekapNilai = () => {
         ekstrakurikulerData = [["-", "-"]];
       }
 
-      const remainingSpace2 = 297 - additionalY;
+      const remainingSpace2 = PAGE_H - additionalY;
       const estimatedTableHeight2 = 20 + ekstrakurikulerData.length * 8;
 
       if (remainingSpace2 < estimatedTableHeight2 + 60) {
@@ -13409,7 +13846,7 @@ const RekapNilai = () => {
       console.log("Ranking Value:", ranking);
       console.log("Generated Catatan:", catatan);
 
-      const remainingSpaceBeforeCatatan = 297 - additionalY;
+      const remainingSpaceBeforeCatatan = PAGE_H - additionalY;
       const estimatedCatatanHeight = 25;
 
       if (remainingSpaceBeforeCatatan < estimatedCatatanHeight + 60) {
@@ -13453,7 +13890,7 @@ const RekapNilai = () => {
       );
 
       const requiredSpace = 170;
-      const remainingSpaceBeforeKehadiran = 297 - additionalY;
+const remainingSpaceBeforeKehadiran = PAGE_H - additionalY;
 
       if (remainingSpaceBeforeKehadiran < requiredSpace) {
         doc.addPage();
@@ -13854,6 +14291,26 @@ const RekapNilai = () => {
 
       {/* ✅ TAMBAH: Filter Semester DAN Kelas */}
       <div style={{ textAlign: "center", marginBottom: "15px" }}>
+      <label style={{ fontSize: "14px", color: "#666", marginRight: "10px" }}>
+  Ukuran Kertas:
+</label>
+<select
+  value={paperSize}
+  onChange={(e) => setPaperSize(e.target.value as "a4" | "f4")}
+  style={{
+    padding: "10px 15px",
+    fontSize: "16px",
+    borderRadius: "4px",
+    border: "1px solid #ddd",
+    minWidth: "130px",
+    cursor: "pointer",
+    backgroundColor: "white",
+    marginRight: "20px",
+  }}
+>
+  <option value="a4">A4 (Letter)</option>
+  <option value="f4">F4 / Legal</option>
+</select>
         <label style={{ fontSize: "14px", color: "#666", marginRight: "10px" }}>
           Semester:
         </label>
